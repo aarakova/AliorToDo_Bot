@@ -30,7 +30,7 @@ func upNewEventTable(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	} else if rowsAffected, _ := exec.RowsAffected(); rowsAffected == 0 {
-		return fmt.Errorf("opperation CREATE TABLE todo_user doesn't change anything")
+		return fmt.Errorf("opperation CREATE TABLE todo_event doesn't change anything")
 	}
 	return nil
 }
@@ -43,7 +43,7 @@ func downNewEventTable(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	} else if rowsAffected, _ := exec.RowsAffected(); rowsAffected == 0 {
-		return fmt.Errorf("opperation 'DROP TABLE todo_user' doesn't change anything")
+		return fmt.Errorf("opperation 'DROP TABLE todo_event' doesn't change anything")
 	}
 	return nil
 }
