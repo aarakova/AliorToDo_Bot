@@ -3,7 +3,6 @@ package migrations
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/pressly/goose/v3"
 )
@@ -14,7 +13,7 @@ func init() {
 
 func upNewMembershipTable(ctx context.Context, tx *sql.Tx) error {
 	// This code is executed when the migration is applied.
-	exec, err := tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE todo_membership(
     		id_group SERIAL,
     		id_user VARCHAR(255) NOT NULL,
@@ -25,21 +24,17 @@ func upNewMembershipTable(ctx context.Context, tx *sql.Tx) error {
 	`)
 	if err != nil {
 		return err
-	} else if rowsAffected, _ := exec.RowsAffected(); rowsAffected == 0 {
-		return fmt.Errorf("opperation CREATE TABLE todo_membership doesn't change anything")
 	}
 	return nil
 }
 
 func downNewMembershipTable(ctx context.Context, tx *sql.Tx) error {
 	// This code is executed when the migration is rolled back.
-	exec, err := tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		DROP TABLE todo_membership;
 	`)
 	if err != nil {
 		return err
-	} else if rowsAffected, _ := exec.RowsAffected(); rowsAffected == 0 {
-		return fmt.Errorf("opperation 'DROP TABLE todo_membership' doesn't change anything")
 	}
 	return nil
 }
