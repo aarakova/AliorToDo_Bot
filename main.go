@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"aliorToDoBot/src/db"
+	`aliorToDoBot/src/db/migrations`
 
 	_ "aliorToDoBot/migrations"
 )
@@ -17,7 +17,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = db.MigrateDatabase(pool)
+	err = migrations.MigrateDatabase(pool)
 	if err != nil {
 		log.Fatal(err)
 	}
