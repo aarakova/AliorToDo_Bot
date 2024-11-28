@@ -17,12 +17,12 @@ func upNewEventTable(ctx context.Context, tx *sql.Tx) error {
 		CREATE TABLE todo_event(
     		id_event SERIAL PRIMARY KEY,
     		id_group SERIAL, 
-    		category VARCHAR(255) NOT NULL,
-    		name_event TEXT NOT NULL,
+    		category event_category NOT NULL,
+    		name_event text NOT NULL,
     		datatime_start TIMESTAMP NOT NULL,
     		duration INTERVAL NOT NULL,
-    		link_to_video TEXT NOT NULL,
-    		status VARCHAR(255) NOT NULL,
+    		link_to_video text NOT NULL,
+    		status event_status NOT NULL,
     		FOREIGN KEY (id_group) REFERENCES todo_group(id_group)		                    
 		);
 	`)

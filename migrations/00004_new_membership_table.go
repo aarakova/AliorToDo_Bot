@@ -16,8 +16,8 @@ func upNewMembershipTable(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE todo_membership(
     		id_group SERIAL,
-    		id_user VARCHAR(255) NOT NULL,
-    		id_admin VARCHAR(255) NOT NULL,
+    		id_user text NOT NULL,
+    		id_admin text NOT NULL,
     		FOREIGN KEY (id_group) REFERENCES todo_group(id_group),
     		FOREIGN KEY (id_user) REFERENCES todo_user(id_user)	
 		);

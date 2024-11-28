@@ -16,7 +16,7 @@ func upNewGroupTable(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE todo_group(
     		id_group SERIAL PRIMARY KEY,
-    		group_name VARCHAR(255) NOT NULL
+    		group_name text NOT NULL
 		);
 	`)
 	if err != nil {

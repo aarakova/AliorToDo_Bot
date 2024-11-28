@@ -15,8 +15,8 @@ func upNewUserTable(ctx context.Context, tx *sql.Tx) error {
 	// This code is executed when the migration is applied.
 	_, err := tx.ExecContext(ctx, `
 		CREATE TABLE todo_user(
-    		id_user VARCHAR(255) NOT NULL PRIMARY KEY,
-    		user_name VARCHAR(255) NOT NULL,
+    		id_user text NOT NULL PRIMARY KEY,
+    		user_name text NOT NULL,
     		id_chat SERIAL
 		);
 	`)
