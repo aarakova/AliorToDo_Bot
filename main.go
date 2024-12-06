@@ -75,7 +75,7 @@ func main() {
 // ---- Общие функции ----
 func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	switch text {
-	case "/start":
+	case "/start", "Главное меню":
 		sendMainMenu(bot, chatID)
 	case "Мероприятия":
 		sendEventsMenu(bot, chatID)
