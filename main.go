@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,28 +16,7 @@ import (
 	"aliorToDoBot/src/db"
 )
 
-// type Event struct {
-// 	ID        int64
-// 	GroupID   int64    // ID группы, если мероприятие связано с группой
-// 	Category  string // Личное, Семья, Работа
-// 	Name      string
-// 	StartTime time.Time
-// 	Duration  time.Duration
-// 	IsAllDay  bool
-// 	Status    string
-// }
-
-// type Group struct {
-// 	ID      int
-// 	Name    string
-// 	Members []string
-// }
-
 var (
-	// events          = make(map[int]Event) // Временное хранилище мероприятий
-	// groups          = make(map[int]Group) // Временное хранилище групп
-	// eventCounter    = 1                   // Счетчик ID мероприятий
-	// groupCounter    = 1                   // Счетчик ID групп
 	userSteps       = make(map[int64]string)
 	tempEvent       = make(map[int64]gorm_models.Event) // Временное хранилище для событий на этапе создания
 	tempGroup       = make(map[int64]gorm_models.Group) // Временное хранилище для групп на этапе создания
@@ -283,22 +263,56 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	message.WriteString("Ваши мероприятия:\n\n")
 	for _, event := range events {
 		groupName := groupMap[event.IDGroup]
-		message.WriteString(formatEvent(event, groupName) + "\n")
+		message.WriteString(formatEvent(event, groupName) + "\n\n")
 	}
 
 	msg := tgbotapi.NewMessage(chatID, message.String())
+	msg.ParseMode = "Markdown"
 	if _, err := bot.Send(msg); err != nil {
+
 		log.Printf("Ошибка отправки сообщения: %v", err)
 	}
 }
 
 func formatEvent(event gorm_models.Event, groupName string) string {
+	// Форматируем продолжительность без секунд
+	formattedDuration := formatDuration(event.Duration)
+
 	if event.IsAllDay {
 		return fmt.Sprintf("📅 *%s*\nГруппа: %s\nКатегория: %s\nДата: %s\nСтатус: %s",
 			event.NameEvent, groupName, event.Category, event.DatetimeStart.Format("02.01.2006"), event.Status)
 	}
 	return fmt.Sprintf("📅 *%s*\nГруппа: %s\nКатегория: %s\nДата и время: %s\nПродолжительность: %s\nСтатус: %s",
-		event.NameEvent, groupName, event.Category, event.DatetimeStart.Format("02.01.2006 15:04"), event.Duration.String(), event.Status)
+		event.NameEvent, groupName, event.Category, event.DatetimeStart.Format("02.01.2006 15:04"), formattedDuration, event.Status)
+}
+
+// Функция форматирования продолжительности без секунд
+func formatDuration(d time.Duration) string {
+	days := d / (24 * time.Hour) // Вычисляем дни
+	d -= days * 24 * time.Hour   // Убираем дни из общей продолжительности
+	hours := d / time.Hour       // Вычисляем часы
+	d -= hours * time.Hour       // Убираем часы
+	minutes := d / time.Minute   // Вычисляем минуты
+
+	// Формируем строку
+	var result string
+	if days > 0 {
+		result += fmt.Sprintf("%dd", days)
+	}
+	if hours > 0 {
+		if result != "" {
+			result += " "
+		}
+		result += fmt.Sprintf("%dh", hours)
+	}
+	if minutes > 0 {
+		if result != "" {
+			result += " "
+		}
+		result += fmt.Sprintf("%dm", minutes)
+	}
+
+	return result
 }
 
 // ---- Функционал просмотра групп ----
@@ -345,9 +359,9 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 			var user gorm_models.User
 			if err := db.DB.Where("id_user = ?", membership.IDUser).First(&user).Error; err == nil {
 				if membership.IDAdmin == membership.IDUser {
-					admin = user.UserName
+					admin = "@" + user.UserName
 				} else {
-					members = append(members, user.UserName)
+					members = append(members, "@"+user.UserName)
 				}
 			}
 		}
@@ -531,20 +545,24 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_duration":
-		if text != "Пропустить" {
-			duration, err := parseDuration(text)
-			if err != nil {
-				msg := tgbotapi.NewMessage(chatID, "Неверный формат продолжительности. Используйте формат 1d2h3m.")
+		if text != "Пропустить" { // Если пользователь не пропускает ввод
+			duration, err := parseDuration(text) // Парсим продолжительность
+			if err != nil {                      // Если формат некорректен
+				log.Printf("Ошибка парсинга продолжительности: %v", err)
+				msg := tgbotapi.NewMessage(chatID, "Неверный формат продолжительности. Используйте формат 1d2h3m, где:\n- d: дни\n- h: часы\n- m: минуты. Пример: 1d2h или 2h30m.")
 				if _, err := bot.Send(msg); err != nil {
 					log.Printf("Ошибка отправки сообщения: %v", err)
 				}
-				return
+				return // Прерываем выполнение, чтобы пользователь ввёл данные заново
 			}
-			event.Duration = duration
+			event.Duration = duration // Сохраняем продолжительность, если формат корректен
+		} else {
+			event.Duration = 0 // Если пользователь пропустил, устанавливаем продолжительность как 0
 		}
 
 		event.Status = "Запланировано"
 
+		// Сохраняем событие в базу данных
 		if err := db.DB.Create(&event).Error; err != nil {
 			log.Println("Ошибка сохранения события:", err)
 			msg := tgbotapi.NewMessage(chatID, "Ошибка при сохранении события.")
@@ -554,15 +572,16 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			return
 		}
 
-		delete(tempEvent, chatID)
-		delete(userSteps, chatID)
+		delete(tempEvent, chatID) // Удаляем временные данные
+		delete(userSteps, chatID) // Сбрасываем шаги
 
 		log.Println("Мероприятие успешно создано.")
 		msg := tgbotapi.NewMessage(chatID, "Мероприятие успешно создано!")
 		if _, err := bot.Send(msg); err != nil {
 			log.Printf("Ошибка отправки сообщения: %v", err)
 		}
-		sendMainMenu(bot, chatID)
+
+		sendMainMenu(bot, chatID) // Возвращаем пользователя в главное меню
 	}
 }
 
@@ -648,58 +667,6 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
-// func startGroupEventCreation(bot *tgbotapi.BotAPI, chatID int64) {
-// 	var memberships []gorm_models.Membership
-//
-// 	// Извлекаем группы, в которых состоит пользователь
-// 	if err := db.DB.Where("id_user = ?", chatID).Find(&memberships).Error; err != nil {
-// 		log.Println("Ошибка получения групп пользователя:", err)
-// 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
-// 		bot.Send(msg)
-// 		return
-// 	}
-//
-// 	// Собираем ID групп
-// 	groupIDs := make([]int64, 0)
-// 	for _, membership := range memberships {
-// 		groupIDs = append(groupIDs, membership.IDGroup)
-// 	}
-//
-// 	// Если пользователь не состоит ни в одной группе
-// 	if len(groupIDs) == 0 {
-// 		msg := tgbotapi.NewMessage(chatID, "У вас пока нет групп. Создайте группу перед добавлением мероприятия.")
-// 		bot.Send(msg)
-// 		return
-// 	}
-//
-// 	// Извлекаем информацию о группах по их ID
-// 	var groups []gorm_models.Group
-// 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
-// 		log.Println("Ошибка получения информации о группах:", err)
-// 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении данных о группах.")
-// 		bot.Send(msg)
-// 		return
-// 	}
-//
-// 	// Создаем клавиатуру с кнопками для выбора группы
-// 	var inlineKeyboard [][]tgbotapi.InlineKeyboardButton
-// 	for _, group := range groups {
-// 		button := tgbotapi.NewInlineKeyboardButtonData(group.GroupName, fmt.Sprintf("group_%d", group.IDGroup))
-// 		inlineKeyboard = append(inlineKeyboard, tgbotapi.NewInlineKeyboardRow(button))
-// 	}
-//
-// 	// Отправляем сообщение с кнопками, если группы найдены
-// 	if len(inlineKeyboard) > 0 {
-// 		msg := tgbotapi.NewMessage(chatID, "Выберите группу для создания мероприятия:")
-// 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(inlineKeyboard...)
-// 		bot.Send(msg)
-// 	} else {
-// 		// На случай, если группы неожиданно не найдены
-// 		msg := tgbotapi.NewMessage(chatID, "У вас пока нет групп. Создайте группу перед добавлением мероприятия.")
-// 		bot.Send(msg)
-// 	}
-// }
-
 func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
 	chatID := callback.Message.Chat.ID
 
@@ -777,41 +744,31 @@ func findUsernameByChatID(chatID int64) string {
 }
 
 func parseDuration(input string) (time.Duration, error) {
-	var totalDuration time.Duration
-	var currentValue string
+	// Регулярное выражение для проверки формата
+	re := regexp.MustCompile(`^(\d+d)?(\d+h)?(\d+m)?$`)
+	if !re.MatchString(input) {
+		return 0, errors.New("некорректный формат продолжительности")
+	}
 
-	// Разбираем строку символ за символом
-	for _, char := range input {
-		if char >= '0' && char <= '9' { // Если символ — цифра, добавляем к текущему значению
-			currentValue += string(char)
-		} else { // Если символ — суффикс (d, h, m, s)
-			if currentValue == "" {
-				return 0, nil // Если перед суффиксом не было числа, возвращаем ошибку
-			}
-			value, err := strconv.Atoi(currentValue)
-			if err != nil {
-				return 0, err
-			}
-			switch char {
-			case 'd':
-				totalDuration += time.Hour * 24 * time.Duration(value)
-			case 'h':
-				totalDuration += time.Hour * time.Duration(value)
-			case 'm':
-				totalDuration += time.Minute * time.Duration(value)
-			case 's':
-				totalDuration += time.Second * time.Duration(value)
-			default:
-				return 0, nil // Некорректный суффикс
-			}
-			currentValue = "" // Сбрасываем текущее значение после обработки
+	// Парсим дни, часы и минуты
+	var duration time.Duration
+	matches := re.FindStringSubmatch(input)
+
+	for _, match := range matches {
+		if match == "" {
+			continue
+		}
+		if strings.HasSuffix(match, "d") {
+			days, _ := time.ParseDuration(strings.TrimSuffix(match, "d") + "h")
+			duration += days * 24
+		} else if strings.HasSuffix(match, "h") {
+			hours, _ := time.ParseDuration(match)
+			duration += hours
+		} else if strings.HasSuffix(match, "m") {
+			minutes, _ := time.ParseDuration(match)
+			duration += minutes
 		}
 	}
 
-	// Если строка закончилась без суффикса, возвращаем ошибку
-	if currentValue != "" {
-		return 0, nil
-	}
-
-	return totalDuration, nil
+	return duration, nil
 }
