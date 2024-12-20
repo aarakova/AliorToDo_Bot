@@ -456,9 +456,19 @@ func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
 
 func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	event := tempEvent[chatID]
+	if text == "Главное меню" {
+		delete(tempGroup, chatID)
+		delete(userSteps, chatID)
+		sendMainMenu(bot, chatID)
+		return
+	}
 
 	switch userSteps[chatID] {
 	case "selecting_event_group":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		log.Println("Ожидался выбор группы через инлайн-кнопку.")
 		msg := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите группу, нажав на кнопку.")
 		if _, err := bot.Send(msg); err != nil {
@@ -466,6 +476,10 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_category":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		validCategories := []string{"Личное", "Семья", "Работа"}
 		isValid := false
 		for _, category := range validCategories {
@@ -491,6 +505,10 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_name":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		event.NameEvent = text
 		tempEvent[chatID] = event
 		userSteps[chatID] = "creating_event_time"
@@ -545,6 +563,10 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_all_day_date":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		layout := "02.01.2006"
 		allDayDate, err := time.Parse(layout, text)
 		if err != nil {
@@ -571,6 +593,10 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_duration":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		if text != "Пропустить" { // Если пользователь не пропускает ввод
 			duration, err := parseDuration(text) // Парсим продолжительность
 			if err != nil {                      // Если формат некорректен
@@ -757,16 +783,6 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
-}
-
-// Вспомогательная функция для нахождения username по chatID
-func findUsernameByChatID(chatID int64) string {
-	for username, id := range authorizedUsers {
-		if id == chatID {
-			return username
-		}
-	}
-	return ""
 }
 
 func parseDuration(input string) (time.Duration, error) {
