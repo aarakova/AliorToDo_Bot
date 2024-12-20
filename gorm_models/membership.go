@@ -1,10 +1,7 @@
 package gorm_models
 
 type Membership struct {
-	IDGroup int    `gorm:"not null"`
-	IDUser  string `gorm:"not null"`
-	IDAdmin string `gorm:"not null"`
-
-	Group Group `gorm:"foreignKey:IDGroup;constraint:OnDelete:CASCADE;"`
-	User  User  `gorm:"foreignKey:IDUser;constraint:OnDelete:CASCADE;"`
+	IDGroup int64 `gorm:"foreignKey:IDGroup;references:IDGroup;column:id_group;not null;unique"`
+	IDUser  int64 `gorm:"foreignKey:IDUser;references:IDUser;column:id_user;not null"`
+	IDAdmin int64 `gorm:"column:id_admin;not null"`
 }

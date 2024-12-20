@@ -1,7 +1,7 @@
 package gorm_models
 
 type User struct {
-	IDUser   string `gorm:"primaryKey;type:text"`
+	IDUser   int64  `gorm:"primaryKey;type:text"`
 	UserName string `gorm:"type:text;not null"`
-	IDChat   int    `gorm:"type:serial"`
+	IDChat   int64  `gorm:"autoIncrement"`
 }
