@@ -78,14 +78,16 @@ func main() {
 			case "creating_group_name", "adding_group_members":
 				handleGroupCreation(bot, chatID, update.Message.Text)
 			default:
-				handleDefault(bot, chatID, update.Message.Text)
+				handleDefault(bot, chatID, update.Message.Text, update.Message.Chat.UserName)
 			}
 		}
 	}
 }
 
 // ---- Общие функции ----
-func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text string) {
+func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
+	fmt.Println("Получено сообщение:", text)
+
 	if text == "Главное меню" {
 		delete(userSteps, chatID)
 		sendMainMenu(bot, chatID)
@@ -94,6 +96,7 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 	switch text {
 	case "/start":
+		checkAndAddNewUser(username, chatID)
 		ensurePersonalGroup(bot, chatID)
 		sendMainMenu(bot, chatID)
 	case "Мероприятия":
@@ -102,8 +105,6 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		sendGroupsMenu(bot, chatID)
 	case "Создать мероприятие":
 		startCreateEvent(bot, chatID)
-	// case "Создать мероприятие для группы":
-	// 	startGroupEventCreation(bot, chatID)
 	case "Создать группу":
 		startCreateGroup(bot, chatID)
 	case "Мои мероприятия":
@@ -115,6 +116,27 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		bot.Send(msg)
 	}
 }
+
+func checkAndAddNewUser(username string, chatID int64) {
+	err := db.DB.Where("id_user = ?", chatID).First(
+		&gorm_models.User{IDChat: chatID}).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("Ошибка проверки авторизации пользователя %d: %v", chatID, err)
+		return
+	}
+
+	// Если группа "Личное" уже существует, выходим
+	if err == nil {
+		log.Printf("Пользователь уже существует %d", chatID)
+		return
+	}
+
+	err = db.DB.Create(&gorm_models.User{IDChat: chatID, UserName: username}).Error
+	if err != nil {
+		log.Println("Не смог создать новго пользователя")
+	}
+}
+
 func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	// Проверяем, есть ли уже группа "Личное" для данного пользователя
 	var group gorm_models.Group
@@ -137,7 +159,7 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 		GroupName: "Личное",
 	}
 
-	if err := db.DB.Create(&newGroup).Error; err != nil {
+	if err = db.DB.Create(&newGroup).Error; err != nil {
 		log.Printf("Ошибка создания группы 'Личное' для пользователя %d: %v", chatID, err)
 		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при создании группы 'Личное'. Попробуйте позже.")
 		bot.Send(msg)
@@ -151,7 +173,7 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 		IDAdmin: chatID, // Устанавливаем текущего пользователя администратором
 	}
 
-	if err := db.DB.Create(&membership).Error; err != nil {
+	if err = db.DB.Create(&membership).Error; err != nil {
 		log.Printf("Ошибка добавления пользователя %d в группу 'Личное': %v", chatID, err)
 		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при создании группы 'Личное'. Попробуйте позже.")
 		bot.Send(msg)
@@ -485,6 +507,10 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_time":
+		if text == "Главное меню" {
+			userSteps[chatID] = ""
+			return
+		}
 		if strings.HasPrefix(text, "Весь день") {
 			userSteps[chatID] = "creating_event_all_day_date"
 			log.Printf("Переход к состоянию: %s", userSteps[chatID])
@@ -540,7 +566,7 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			},
 			ResizeKeyboard: true,
 		}
-		if _, err := bot.Send(msg); err != nil {
+		if _, err = bot.Send(msg); err != nil {
 			log.Printf("Ошибка отправки сообщения: %v", err)
 		}
 
@@ -550,7 +576,7 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			if err != nil {                      // Если формат некорректен
 				log.Printf("Ошибка парсинга продолжительности: %v", err)
 				msg := tgbotapi.NewMessage(chatID, "Неверный формат продолжительности. Используйте формат 1d2h3m, где:\n- d: дни\n- h: часы\n- m: минуты. Пример: 1d2h или 2h30m.")
-				if _, err := bot.Send(msg); err != nil {
+				if _, err = bot.Send(msg); err != nil {
 					log.Printf("Ошибка отправки сообщения: %v", err)
 				}
 				return // Прерываем выполнение, чтобы пользователь ввёл данные заново
@@ -749,25 +775,34 @@ func parseDuration(input string) (time.Duration, error) {
 	if !re.MatchString(input) {
 		return 0, errors.New("некорректный формат продолжительности")
 	}
-
-	// Парсим дни, часы и минуты
-	var duration time.Duration
 	matches := re.FindStringSubmatch(input)
+	if matches == nil {
+		return 0, errors.New("не могу найти дату")
+	}
+	var duration time.Duration
+	if matches[1] != "" { // Если дни найдены
+		days, err := strconv.Atoi(strings.TrimSuffix(matches[1], "d"))
+		if err != nil {
+			return 0, errors.New("некорректный формат дней")
+		}
+		duration += time.Duration(days) * 24 * time.Hour
+	}
+	// Парсим часы
+	if matches[2] != "" { // Если часы найдены
+		hours, err := strconv.Atoi(strings.TrimSuffix(matches[2], "h"))
+		if err != nil {
+			return 0, errors.New("некорректный формат часов")
+		}
+		duration += time.Duration(hours) * time.Hour
+	}
 
-	for _, match := range matches {
-		if match == "" {
-			continue
+	// Парсим минуты
+	if matches[3] != "" { // Если минуты найдены
+		minutes, err := strconv.Atoi(strings.TrimSuffix(matches[3], "m"))
+		if err != nil {
+			return 0, errors.New("некорректный формат минут")
 		}
-		if strings.HasSuffix(match, "d") {
-			days, _ := time.ParseDuration(strings.TrimSuffix(match, "d") + "h")
-			duration += days * 24
-		} else if strings.HasSuffix(match, "h") {
-			hours, _ := time.ParseDuration(match)
-			duration += hours
-		} else if strings.HasSuffix(match, "m") {
-			minutes, _ := time.ParseDuration(match)
-			duration += minutes
-		}
+		duration += time.Duration(minutes) * time.Minute
 	}
 
 	return duration, nil
