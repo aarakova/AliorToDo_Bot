@@ -17,14 +17,9 @@ import (
 )
 
 var (
-	userSteps       = make(map[int64]string)
-	tempEvent       = make(map[int64]gorm_models.Event) // Временное хранилище для событий на этапе создания
-	tempGroup       = make(map[int64]gorm_models.Group) // Временное хранилище для групп на этапе создания
-	authorizedUsers = map[string]int64{                 // Мапа авторизованных пользователей: username -> chatID
-		"@EgorKo25": 1233580695,
-		"@aarachok": 917952137,
-		"@deaqs":    182062937,
-	}
+	userSteps = make(map[int64]string)
+	tempEvent = make(map[int64]gorm_models.Event) // Временное хранилище для событий на этапе создания
+	tempGroup = make(map[int64]gorm_models.Group) // Временное хранилище для групп на этапе создания
 )
 
 func main() {
@@ -108,6 +103,7 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
 	case "Создать группу":
 		startCreateGroup(bot, chatID)
 	case "Мои мероприятия":
+		UpdateEventStatuses(db.DB)
 		viewMyEvents(bot, chatID)
 	case "Мои группы":
 		viewMyGroups(bot, chatID)
@@ -547,7 +543,7 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			}
 			return
 		}
-		event.DatetimeStart = startTime
+		event.DatetimeStart = startTime.UTC()
 		tempEvent[chatID] = event
 		userSteps[chatID] = "creating_event_duration"
 		log.Printf("Переход к состоянию: %s", userSteps[chatID])
@@ -695,14 +691,19 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		participants := strings.Split(text, ",")
 		for _, participant := range participants {
 			participant = strings.TrimSpace(participant)
-			participantID, ok := authorizedUsers[participant]
-			if !ok || participantID == chatID { // Игнорируем неавторизованных и администратора
+
+			var user gorm_models.User
+			if err := db.DB.Where("user_name = ?", participant).First(&user).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) || user.IDUser == chatID { // Игнорируем несуществующих пользователей и администратора
+					continue
+				}
+				log.Printf("Ошибка проверки пользователя %s: %v", participant, err)
 				continue
 			}
 
 			membership := gorm_models.Membership{
 				IDGroup: newGroup.IDGroup,
-				IDUser:  participantID,
+				IDUser:  user.IDUser,
 				IDAdmin: chatID, // ID администратора группы
 			}
 			if err := db.DB.Create(&membership).Error; err != nil {
@@ -822,4 +823,62 @@ func parseDuration(input string) (time.Duration, error) {
 	}
 
 	return duration, nil
+}
+
+// Обновление статуса мероприятия в зависимости от его времени и продолжительности
+func UpdateEventStatuses(db *gorm.DB) {
+	// Получаем все мероприятия из базы
+	var events []gorm_models.Event
+	err := db.Find(&events).Error
+	if err != nil {
+		log.Printf("Ошибка получения мероприятий: %v", err)
+		return
+	}
+
+	// Получаем текущее время
+	localTime := time.Now()
+
+	// Извлекаем компоненты локального времени
+	year, month, day := localTime.Date()
+	hour, min, sec := localTime.Clock()
+
+	// Создаем новое время с часовым поясом UTC, но используя компоненты локального времени
+	currentTime := time.Date(year, month, day, hour, min, sec, localTime.Nanosecond(), time.UTC)
+
+	for _, event := range events {
+		previousStatus := event.Status
+
+		startTime := event.DatetimeStart.UTC()
+		var endTime time.Time
+		if event.Duration > 0 {
+			endTime = startTime.Add(event.Duration)
+		} else {
+			endTime = startTime // Если продолжительность равна 0, конец совпадает с началом
+		}
+
+		log.Printf("Проверяем мероприятие ID: %d, StartTime: %v, EndTime: %v, CurrentTime: %v", event.IDEvent, startTime, endTime, currentTime)
+
+		// Логика определения статуса
+		if currentTime.Before(startTime) {
+			event.Status = "Запланировано"
+		} else if currentTime.After(endTime) {
+			event.Status = "Завершено"
+		} else if currentTime.After(startTime) && currentTime.Before(endTime) {
+			event.Status = "В процессе"
+		}
+
+		log.Printf("Статус мероприятия ID: %d изменился с '%s' на '%s'", event.IDEvent, previousStatus, event.Status)
+
+		// Обновляем статус в базе, если он изменился
+		if previousStatus != event.Status {
+			err := db.Model(&gorm_models.Event{}).
+				Where("id_event = ?", event.IDEvent).
+				Update("status", event.Status).Error
+			if err != nil {
+				log.Printf("Ошибка обновления статуса мероприятия ID %d: %v", event.IDEvent, err)
+			} else {
+				log.Printf("Статус мероприятия ID %d обновлен на '%s'", event.IDEvent, event.Status)
+			}
+		}
+	}
 }

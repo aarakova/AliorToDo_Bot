@@ -12,5 +12,5 @@ type Event struct {
 	Category      string        `gorm:"not null;check:category IN ('Личное','Семья','Работа')"`
 	Duration      time.Duration `gorm:"column:duration"`
 	IsAllDay      bool          `gorm:"not null"`
-	Status        string        `gorm:"not null; check:status IN ('Запланировано', 'В работе', 'Завершено')"`
+	Status        string        `gorm:"not null; check:status IN ('Запланировано', 'В процессе', 'Завершено')"`
 }
