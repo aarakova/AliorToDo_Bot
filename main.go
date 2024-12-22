@@ -105,6 +105,8 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
 	case "Мои мероприятия":
 		UpdateEventStatuses(db.DB)
 		viewMyEvents(bot, chatID)
+	case "Удалить мероприятие":
+		deleteEvent(bot, chatID)
 	case "Мои группы":
 		viewMyGroups(bot, chatID)
 	default:
@@ -221,17 +223,13 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	if err := db.DB.Where("id_user = ?", chatID).Find(&memberships).Error; err != nil {
 		log.Println("Ошибка получения групп пользователя:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Ошибка отправки сообщения: %v", err)
-		}
+		bot.Send(msg)
 		return
 	}
 
 	if len(memberships) == 0 {
 		msg := tgbotapi.NewMessage(chatID, "У вас пока нет мероприятий.")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Ошибка отправки сообщения: %v", err)
-		}
+		bot.Send(msg)
 		return
 	}
 
@@ -246,17 +244,13 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&events).Error; err != nil {
 		log.Println("Ошибка получения event записей:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших мероприятий.")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Ошибка отправки сообщения: %v", err)
-		}
+		bot.Send(msg)
 		return
 	}
 
 	if len(events) == 0 {
 		msg := tgbotapi.NewMessage(chatID, "У вас пока нет мероприятий.")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Ошибка отправки сообщения: %v", err)
-		}
+		bot.Send(msg)
 		return
 	}
 
@@ -265,9 +259,7 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
 		log.Println("Ошибка получения данных групп:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при обработке данных ваших групп.")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Ошибка отправки сообщения: %v", err)
-		}
+		bot.Send(msg)
 		return
 	}
 
@@ -284,12 +276,17 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 		message.WriteString(formatEvent(event, groupName) + "\n\n")
 	}
 
+	// Отправляем сообщение с клавиатурой
 	msg := tgbotapi.NewMessage(chatID, message.String())
 	msg.ParseMode = "Markdown"
-	if _, err := bot.Send(msg); err != nil {
-
-		log.Printf("Ошибка отправки сообщения: %v", err)
+	msg.ReplyMarkup = tgbotapi.ReplyKeyboardMarkup{
+		Keyboard: [][]tgbotapi.KeyboardButton{
+			{tgbotapi.NewKeyboardButton("Удалить мероприятие")},
+			{tgbotapi.NewKeyboardButton("Главное меню")},
+		},
+		ResizeKeyboard: true,
 	}
+	bot.Send(msg)
 }
 
 func formatEvent(event gorm_models.Event, groupName string) string {
@@ -331,6 +328,35 @@ func formatDuration(d time.Duration) string {
 	}
 
 	return result
+}
+
+func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
+	// Получаем список мероприятий пользователя
+	var events []gorm_models.Event
+	err := db.DB.Where("id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", chatID).Find(&events).Error
+	if err != nil {
+		log.Printf("Ошибка получения мероприятий: %v", err)
+		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при получении списка мероприятий.")
+		bot.Send(msg)
+		return
+	}
+
+	if len(events) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "У вас пока нет мероприятий для удаления.")
+		bot.Send(msg)
+		return
+	}
+
+	// Создаем инлайн-кнопки для мероприятий
+	var inlineKeyboard [][]tgbotapi.InlineKeyboardButton
+	for _, event := range events {
+		button := tgbotapi.NewInlineKeyboardButtonData(event.NameEvent, fmt.Sprintf("delete_event_%d", event.IDEvent))
+		inlineKeyboard = append(inlineKeyboard, tgbotapi.NewInlineKeyboardRow(button))
+	}
+
+	msg := tgbotapi.NewMessage(chatID, "Выберите мероприятие для удаления:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(inlineKeyboard...)
+	bot.Send(msg)
 }
 
 // ---- Функционал просмотра групп ----
@@ -722,6 +748,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
 	chatID := callback.Message.Chat.ID
+	data := callback.Data
 
 	// Если callback data начинается с "group_", значит это выбор группы
 	if strings.HasPrefix(callback.Data, "group_") {
@@ -772,18 +799,71 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		return
 	}
 
+	// Обработка удаления мероприятия
+	if strings.HasPrefix(data, "delete_event_") {
+		eventID, err := strconv.Atoi(strings.TrimPrefix(data, "delete_event_"))
+		if err != nil {
+			log.Printf("Ошибка преобразования ID мероприятия: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Некорректный ID мероприятия."))
+			return
+		}
+
+		var event gorm_models.Event
+		err = db.DB.First(&event, eventID).Error
+		if err != nil {
+			log.Printf("Ошибка получения мероприятия: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Мероприятие не найдено."))
+			return
+		}
+
+		// Запрос подтверждения удаления
+		confirmationText := fmt.Sprintf("Удалить мероприятие '%s'?", event.NameEvent)
+		confirmKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Да", fmt.Sprintf("confirm_delete_%d", eventID)),
+				tgbotapi.NewInlineKeyboardButtonData("Нет", "cancel_delete"),
+			),
+		)
+
+		msg := tgbotapi.NewMessage(chatID, confirmationText)
+		msg.ReplyMarkup = confirmKeyboard
+		bot.Send(msg)
+		return
+	}
+
+	// Обработка подтверждения удаления
+	if strings.HasPrefix(data, "confirm_delete_") {
+		eventID, err := strconv.Atoi(strings.TrimPrefix(data, "confirm_delete_"))
+		if err != nil {
+			log.Printf("Ошибка преобразования ID мероприятия: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Некорректный ID мероприятия."))
+			return
+		}
+
+		err = db.DB.Delete(&gorm_models.Event{}, eventID).Error
+		if err != nil {
+			log.Printf("Ошибка удаления мероприятия: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Не удалось удалить мероприятие."))
+			return
+		}
+
+		bot.Request(tgbotapi.NewCallback(callback.ID, "Мероприятие успешно удалено."))
+		msg := tgbotapi.NewMessage(chatID, "Мероприятие успешно удалено.")
+		bot.Send(msg)
+		return
+	}
+
+	// Отмена удаления
+	if data == "cancel_delete" {
+		bot.Request(tgbotapi.NewCallback(callback.ID, "Удаление отменено."))
+		msg := tgbotapi.NewMessage(chatID, "Удаление отменено.")
+		bot.Send(msg)
+		viewMyEvents(bot, chatID)
+		return
+	}
+
 	// Если callback не распознан
 	bot.Request(tgbotapi.NewCallback(callback.ID, "Неизвестное действие"))
-}
-
-// Вспомогательная функция для проверки наличия элемента в слайсе
-func contains(slice []string, item string) bool {
-	for _, elem := range slice {
-		if elem == item {
-			return true
-		}
-	}
-	return false
 }
 
 func parseDuration(input string) (time.Duration, error) {
