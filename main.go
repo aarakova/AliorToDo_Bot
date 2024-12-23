@@ -109,6 +109,8 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
 		deleteEvent(bot, chatID)
 	case "Мои группы":
 		viewMyGroups(bot, chatID)
+	case "Выйти из группы":
+		leaveGroup(bot, chatID)
 	default:
 		msg := tgbotapi.NewMessage(chatID, "Неизвестная команда. Используйте /start.")
 		bot.Send(msg)
@@ -136,19 +138,35 @@ func checkAndAddNewUser(username string, chatID int64) {
 }
 
 func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	err := db.DB.Where("id_chat = ?", chatID).First(&user).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			msg := tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")
+			bot.Send(msg)
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")
+		bot.Send(msg)
+		return
+	}
+
 	// Проверяем, есть ли уже группа "Личное" для данного пользователя
 	var group gorm_models.Group
-	err := db.DB.Where("group_name = ? AND id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", "Личное", chatID).First(&group).Error
+	err = db.DB.Where("group_name = ? AND id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", "Личное", user.IDUser).First(&group).Error
 
 	// Если произошла ошибка, но она не связана с отсутствием записи, логируем и выходим
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		log.Printf("Ошибка проверки группы 'Личное' для пользователя %d: %v", chatID, err)
+		log.Printf("Ошибка проверки группы 'Личное' для пользователя %d: %v", user.IDUser, err)
 		return
 	}
 
 	// Если группа "Личное" уже существует, выходим
 	if err == nil {
-		log.Printf("Группа 'Личное' уже существует для пользователя %d", chatID)
+		log.Printf("Группа 'Личное' уже существует для пользователя %d", user.IDUser)
 		return
 	}
 
@@ -158,7 +176,7 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	if err = db.DB.Create(&newGroup).Error; err != nil {
-		log.Printf("Ошибка создания группы 'Личное' для пользователя %d: %v", chatID, err)
+		log.Printf("Ошибка создания группы 'Личное' для пользователя %d: %v", user.IDUser, err)
 		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при создании группы 'Личное'. Попробуйте позже.")
 		bot.Send(msg)
 		return
@@ -166,19 +184,19 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 
 	// Добавляем запись о членстве (Membership) для администратора
 	membership := gorm_models.Membership{
-		IDGroup: newGroup.IDGroup,
-		IDUser:  chatID,
-		IDAdmin: chatID, // Устанавливаем текущего пользователя администратором
+		IDGroup: newGroup.IDGroup, // ID группы
+		IDUser:  user.IDUser,      // ID пользователя из таблицы users
+		IDAdmin: user.IDUser,      // Администратор — текущий пользователь
 	}
 
 	if err = db.DB.Create(&membership).Error; err != nil {
-		log.Printf("Ошибка добавления пользователя %d в группу 'Личное': %v", chatID, err)
+		log.Printf("Ошибка добавления пользователя %d в группу 'Личное': %v", user.IDUser, err)
 		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при создании группы 'Личное'. Попробуйте позже.")
 		bot.Send(msg)
 		return
 	}
 
-	log.Printf("Группа 'Личное' успешно создана для пользователя %d", chatID)
+	log.Printf("Группа 'Личное' успешно создана для пользователя %d", user.IDUser)
 }
 
 func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
@@ -361,58 +379,108 @@ func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
 
 // ---- Функционал просмотра групп ----
 func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку."))
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		bot.Send(tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже."))
+		return
+	}
+
+	// Получение записей Membership для пользователя
 	var memberships []gorm_models.Membership
-	if err := db.DB.Where("id_user = ?", chatID).Find(&memberships).Error; err != nil {
+	if err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error; err != nil {
 		log.Println("Ошибка получения membership записей:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
 		bot.Send(msg)
 		return
 	}
 
+	// Проверка, есть ли группы у пользователя
 	if len(memberships) == 0 {
 		msg := tgbotapi.NewMessage(chatID, "У вас пока нет групп.")
+		msg.ReplyMarkup = tgbotapi.ReplyKeyboardMarkup{
+			Keyboard: [][]tgbotapi.KeyboardButton{
+				{tgbotapi.NewKeyboardButton("Главное меню")},
+			},
+			ResizeKeyboard: true,
+		}
 		bot.Send(msg)
 		return
 	}
 
+	// Получение ID групп из Membership
 	groupIDs := make([]int64, 0)
 	for _, membership := range memberships {
 		groupIDs = append(groupIDs, membership.IDGroup)
 	}
 
+	// Получение информации о группах
 	var groups []gorm_models.Group
-	if err := db.DB.Where("id_group IN (?)", groupIDs).Find(&groups).Error; err != nil {
+	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
 		log.Println("Ошибка получения групп:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
 		bot.Send(msg)
 		return
 	}
 
+	// Формирование сообщения с информацией о группах
 	var message strings.Builder
 	message.WriteString("Ваши группы:\n\n")
 	for _, group := range groups {
+		// Получение всех участников группы
 		var groupMemberships []gorm_models.Membership
 		if err := db.DB.Where("id_group = ?", group.IDGroup).Find(&groupMemberships).Error; err != nil {
 			log.Printf("Ошибка получения участников для группы %d: %v", group.IDGroup, err)
 			continue
 		}
 
+		// Формирование списка участников и администратора
 		members := make([]string, 0)
 		admin := ""
+
 		for _, membership := range groupMemberships {
-			var user gorm_models.User
-			if err := db.DB.Where("id_user = ?", membership.IDUser).First(&user).Error; err == nil {
+			var groupUser gorm_models.User
+			if err := db.DB.Where("id_user = ?", membership.IDUser).First(&groupUser).Error; err == nil {
 				if membership.IDAdmin == membership.IDUser {
-					admin = "@" + user.UserName
+					admin = "@" + groupUser.UserName
 				} else {
-					members = append(members, "@"+user.UserName)
+					members = append(members, "@"+groupUser.UserName)
 				}
+			} else {
+				log.Printf("Ошибка получения пользователя: IDUser=%d, Ошибка: %v", membership.IDUser, err)
 			}
 		}
-		message.WriteString(fmt.Sprintf("Группа: %s\nАдминистратор: %s\nУчастники: %s\n\n", group.GroupName, admin, strings.Join(members, ", ")))
+
+		// Если администратор не найден, добавить сообщение в лог
+		if admin == "" {
+			log.Printf("Администратор для группы '%s' (ID: %d) не найден!", group.GroupName, group.IDGroup)
+			admin = "Не указан"
+		}
+
+		// Добавление информации о группе в сообщение
+		message.WriteString(fmt.Sprintf(
+			"Группа: %s\nАдминистратор: %s\nУчастники: %s\n\n",
+			group.GroupName,
+			admin,
+			strings.Join(members, ", "),
+		))
 	}
 
+	// Отправка сообщения с информацией о группах
 	msg := tgbotapi.NewMessage(chatID, message.String())
+	msg.ReplyMarkup = tgbotapi.ReplyKeyboardMarkup{
+		Keyboard: [][]tgbotapi.KeyboardButton{
+			{tgbotapi.NewKeyboardButton("Выйти из группы")},
+			{tgbotapi.NewKeyboardButton("Главное меню")},
+		},
+		ResizeKeyboard: true,
+	}
 	bot.Send(msg)
 }
 
@@ -694,6 +762,20 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		bot.Send(msg)
 
 	case "adding_group_members":
+		// Извлекаем IDUser из таблицы пользователей по chatID
+		var creator gorm_models.User
+		if err := db.DB.Where("id_chat = ?", chatID).First(&creator).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				log.Printf("Создатель группы с chatID %d не найден", chatID)
+				bot.Send(tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку."))
+				return
+			}
+			log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+			bot.Send(tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже."))
+			return
+		}
+
+		// Создаем группу
 		newGroup := gorm_models.Group{GroupName: group.GroupName}
 		if err := db.DB.Create(&newGroup).Error; err != nil {
 			log.Println("Ошибка сохранения группы:", err)
@@ -704,8 +786,8 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		// Добавляем администратора в таблицу `Membership`
 		adminMembership := gorm_models.Membership{
 			IDGroup: newGroup.IDGroup,
-			IDUser:  chatID,
-			IDAdmin: chatID,
+			IDUser:  creator.IDUser, // IDUser создателя
+			IDAdmin: creator.IDUser, // Устанавливаем администратора
 		}
 		if err := db.DB.Create(&adminMembership).Error; err != nil {
 			log.Println("Ошибка добавления администратора:", err)
@@ -717,10 +799,11 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		participants := strings.Split(text, ",")
 		for _, participant := range participants {
 			participant = strings.TrimSpace(participant)
+			participant = strings.TrimPrefix(participant, "@")
 
 			var user gorm_models.User
 			if err := db.DB.Where("user_name = ?", participant).First(&user).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) || user.IDUser == chatID { // Игнорируем несуществующих пользователей и администратора
+				if errors.Is(err, gorm.ErrRecordNotFound) || user.IDUser == creator.IDUser { // Игнорируем несуществующих пользователей и администратора
 					continue
 				}
 				log.Printf("Ошибка проверки пользователя %s: %v", participant, err)
@@ -730,7 +813,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			membership := gorm_models.Membership{
 				IDGroup: newGroup.IDGroup,
 				IDUser:  user.IDUser,
-				IDAdmin: chatID, // ID администратора группы
+				IDAdmin: creator.IDUser, // Устанавливаем создателя группы как администратора
 			}
 			if err := db.DB.Create(&membership).Error; err != nil {
 				log.Printf("Ошибка добавления участника %s: %v", participant, err)
@@ -743,6 +826,66 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		delete(tempGroup, chatID)
 		delete(userSteps, chatID)
 		sendMainMenu(bot, chatID)
+	}
+}
+func leaveGroup(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			if _, err := bot.Send(tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")); err != nil {
+				log.Printf("Ошибка отправки сообщения: %v", err)
+			}
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		if _, err := bot.Send(tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")); err != nil {
+			log.Printf("Ошибка отправки сообщения: %v", err)
+		}
+		return
+	}
+
+	// Получаем группы, в которых пользователь состоит, исключая группу "Личное"
+	var memberships []gorm_models.Membership
+	err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error
+	if err != nil {
+		log.Printf("Ошибка получения membership записей: %v", err)
+		if _, err := bot.Send(tgbotapi.NewMessage(chatID, "Ошибка при получении списка групп.")); err != nil {
+			log.Printf("Ошибка отправки сообщения: %v", err)
+		}
+		return
+	}
+
+	var groups []gorm_models.Group
+	for _, membership := range memberships {
+		var group gorm_models.Group
+		if err := db.DB.First(&group, membership.IDGroup).Error; err == nil && group.GroupName != "Личное" {
+			groups = append(groups, group)
+		}
+	}
+
+	// Если у пользователя нет доступных групп
+	if len(groups) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "У вас нет групп, из которых можно выйти.")
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("Ошибка отправки сообщения: %v", err)
+		}
+		return
+	}
+
+	// Создаем инлайн-кнопки для выбора группы
+	var inlineKeyboard [][]tgbotapi.InlineKeyboardButton
+	for _, group := range groups {
+		button := tgbotapi.NewInlineKeyboardButtonData(group.GroupName, fmt.Sprintf("leave_group_%d", group.IDGroup))
+		inlineKeyboard = append(inlineKeyboard, tgbotapi.NewInlineKeyboardRow(button))
+	}
+
+	// Отправляем сообщение с инлайн-кнопками
+	msg := tgbotapi.NewMessage(chatID, "Выберите группу для выхода:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(inlineKeyboard...)
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("Ошибка отправки сообщения: %v", err)
 	}
 }
 
@@ -850,6 +993,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		bot.Request(tgbotapi.NewCallback(callback.ID, "Мероприятие успешно удалено."))
 		msg := tgbotapi.NewMessage(chatID, "Мероприятие успешно удалено.")
 		bot.Send(msg)
+		viewMyEvents(bot, chatID)
 		return
 	}
 
@@ -859,6 +1003,142 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		msg := tgbotapi.NewMessage(chatID, "Удаление отменено.")
 		bot.Send(msg)
 		viewMyEvents(bot, chatID)
+		return
+	}
+
+	// выход из группы
+	if strings.HasPrefix(data, "leave_group_") {
+		groupID, err := strconv.Atoi(strings.TrimPrefix(data, "leave_group_"))
+		if err != nil {
+			log.Printf("Ошибка обработки ID группы: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Некорректный выбор группы."))
+			return
+		}
+		// поиск группы по ID
+		var group gorm_models.Group
+		if err := db.DB.First(&group, groupID).Error; err != nil {
+			log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
+			return
+		}
+
+		// Запрос подтверждения выхода
+		confirmText := fmt.Sprintf("Покинуть группу \"%s\"?", group.GroupName)
+		confirmKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Да", fmt.Sprintf("confirm_leave_%d", groupID)),
+				tgbotapi.NewInlineKeyboardButtonData("Нет", "cancel_leave"),
+			),
+		)
+
+		msg := tgbotapi.NewMessage(chatID, confirmText)
+		msg.ReplyMarkup = confirmKeyboard
+		bot.Send(msg)
+		return
+	}
+
+	if strings.HasPrefix(data, "confirm_leave_") {
+		groupID, err := strconv.Atoi(strings.TrimPrefix(data, "confirm_leave_"))
+		if err != nil {
+			log.Printf("Ошибка обработки ID группы: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Некорректный выбор группы."))
+			return
+		}
+
+		// Извлекаем IDUser из таблицы users по chatID
+		var user gorm_models.User
+		if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+			log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
+			return
+		}
+
+		var membership gorm_models.Membership
+		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).First(&membership).Error; err != nil {
+			log.Printf("Ошибка получения membership записи: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
+			return
+		}
+
+		// Проверяем, является ли пользователь администратором
+		if membership.IDAdmin == user.IDUser {
+			// Удаляем записи Membership, связанные с группой
+			if err := db.DB.Where("id_group = ?", groupID).Delete(&gorm_models.Membership{}).Error; err != nil {
+				log.Printf("Ошибка удаления записей Membership для группы %d: %v", groupID, err)
+				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении членов группы."))
+				return
+			}
+
+			// Удаляем саму группу
+			var group gorm_models.Group
+			if err := db.DB.First(&group, groupID).Error; err != nil {
+				log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
+				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
+				return
+			}
+
+			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
+				log.Printf("Ошибка удаления группы: %v", err)
+				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
+				return
+			}
+
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Группа успешно удалена."))
+			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Группа '%s' удалена, так как администратор покинул её.", group.GroupName))
+			bot.Send(msg)
+			viewMyGroups(bot, chatID)
+			return
+		}
+
+		// Если пользователь не администратор, проверяем количество участников
+		var remainingMembers int64
+		if err := db.DB.Model(&gorm_models.Membership{}).Where("id_group = ?", groupID).Count(&remainingMembers).Error; err != nil {
+			log.Printf("Ошибка проверки участников группы: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при проверке участников группы."))
+			return
+		}
+
+		// Удаляем пользователя из группы
+		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).Delete(&gorm_models.Membership{}).Error; err != nil {
+			log.Printf("Ошибка выхода из группы: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
+			return
+		}
+
+		// Если в группе остался только администратор, удаляем группу
+		if remainingMembers == 1 {
+			var group gorm_models.Group
+			if err := db.DB.First(&group, groupID).Error; err != nil {
+				log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
+				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
+				return
+			}
+
+			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
+				log.Printf("Ошибка удаления группы: %v", err)
+				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
+				return
+			}
+
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Группа успешно удалена."))
+			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Группа '%s' успешно удалена, так как в ней остался только администратор.", group.GroupName))
+			bot.Send(msg)
+			viewMyGroups(bot, chatID)
+			return
+		}
+
+		bot.Request(tgbotapi.NewCallback(callback.ID, "Вы успешно покинули группу."))
+		msg := tgbotapi.NewMessage(chatID, "Вы успешно покинули группу.")
+		bot.Send(msg)
+		viewMyGroups(bot, chatID)
+	}
+
+	if data == "cancel_leave" {
+		bot.Request(tgbotapi.NewCallback(callback.ID, "Выход из группы отменен."))
+		msg := tgbotapi.NewMessage(chatID, "Выход из группы отменен.")
+		bot.Send(msg)
+		viewMyGroups(bot, chatID)
+
 		return
 	}
 
