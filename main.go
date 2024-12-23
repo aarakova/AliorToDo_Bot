@@ -1060,44 +1060,6 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			return
 		}
 
-		// Проверяем, является ли пользователь администратором
-		if membership.IDAdmin == user.IDUser {
-			// Удаляем записи Membership, связанные с группой
-			if err := db.DB.Where("id_group = ?", groupID).Delete(&gorm_models.Membership{}).Error; err != nil {
-				log.Printf("Ошибка удаления записей Membership для группы %d: %v", groupID, err)
-				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении членов группы."))
-				return
-			}
-
-			// Удаляем саму группу
-			var group gorm_models.Group
-			if err := db.DB.First(&group, groupID).Error; err != nil {
-				log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
-				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
-				return
-			}
-
-			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
-				log.Printf("Ошибка удаления группы: %v", err)
-				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
-				return
-			}
-
-			bot.Request(tgbotapi.NewCallback(callback.ID, "Группа успешно удалена."))
-			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Группа '%s' удалена, так как администратор покинул её.", group.GroupName))
-			bot.Send(msg)
-			viewMyGroups(bot, chatID)
-			return
-		}
-
-		// Если пользователь не администратор, проверяем количество участников
-		var remainingMembers int64
-		if err := db.DB.Model(&gorm_models.Membership{}).Where("id_group = ?", groupID).Count(&remainingMembers).Error; err != nil {
-			log.Printf("Ошибка проверки участников группы: %v", err)
-			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при проверке участников группы."))
-			return
-		}
-
 		// Удаляем пользователя из группы
 		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).Delete(&gorm_models.Membership{}).Error; err != nil {
 			log.Printf("Ошибка выхода из группы: %v", err)
@@ -1105,23 +1067,24 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			return
 		}
 
-		// Если в группе остался только администратор, удаляем группу
-		if remainingMembers == 1 {
-			var group gorm_models.Group
-			if err := db.DB.First(&group, groupID).Error; err != nil {
-				log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
-				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
-				return
-			}
+		// Проверяем количество оставшихся участников
+		var remainingMembers int64
+		if err := db.DB.Model(&gorm_models.Membership{}).Where("id_group = ?", groupID).Count(&remainingMembers).Error; err != nil {
+			log.Printf("Ошибка проверки участников группы: %v", err)
+			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при проверке участников группы."))
+			return
+		}
 
+		if remainingMembers == 1 {
+			// Удаляем группу, если участников больше нет
 			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
-				log.Printf("Ошибка удаления группы: %v", err)
+				log.Printf("Ошибка удаления группы с ID %d: %v", groupID, err)
 				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
 				return
 			}
 
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Группа успешно удалена."))
-			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Группа '%s' успешно удалена, так как в ней остался только администратор.", group.GroupName))
+			msg := tgbotapi.NewMessage(chatID, "Группа удалена, так как в ней не осталось участников.")
 			bot.Send(msg)
 			viewMyGroups(bot, chatID)
 			return
@@ -1138,7 +1101,6 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		msg := tgbotapi.NewMessage(chatID, "Выход из группы отменен.")
 		bot.Send(msg)
 		viewMyGroups(bot, chatID)
-
 		return
 	}
 
