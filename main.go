@@ -236,9 +236,24 @@ func sendGroupsMenu(bot *tgbotapi.BotAPI, chatID int64) {
 
 // ---- Функционал просмотра мероприятий ----
 func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			msg := tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")
+			bot.Send(msg)
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")
+		bot.Send(msg)
+		return
+	}
+
 	// Найти группы, в которых пользователь состоит
 	var memberships []gorm_models.Membership
-	if err := db.DB.Where("id_user = ?", chatID).Find(&memberships).Error; err != nil {
+	if err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error; err != nil {
 		log.Println("Ошибка получения групп пользователя:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
 		bot.Send(msg)
@@ -349,9 +364,24 @@ func formatDuration(d time.Duration) string {
 }
 
 func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			msg := tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")
+			bot.Send(msg)
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")
+		bot.Send(msg)
+		return
+	}
+
 	// Получаем список мероприятий пользователя
 	var events []gorm_models.Event
-	err := db.DB.Where("id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", chatID).Find(&events).Error
+	err := db.DB.Where("id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", user.IDUser).Find(&events).Error
 	if err != nil {
 		log.Printf("Ошибка получения мероприятий: %v", err)
 		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка при получении списка мероприятий.")
@@ -486,9 +516,28 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 
 // ---- Функционал создания мероприятий ----
 func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
+	// Извлекаем IDUser из таблицы users по chatID
+	var user gorm_models.User
+	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("Пользователь с chatID %d не найден", chatID)
+			msg := tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")
+			if _, err := bot.Send(msg); err != nil {
+				log.Printf("Ошибка отправки сообщения: %v", err)
+			}
+			return
+		}
+		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
+		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("Ошибка отправки сообщения: %v", err)
+		}
+		return
+	}
+
 	// Получаем список групп, где пользователь является администратором
 	var memberships []gorm_models.Membership
-	err := db.DB.Where("id_user = ? AND id_admin = ?", chatID, chatID).Find(&memberships).Error
+	err := db.DB.Where("id_user = ? AND id_admin = ?", user.IDUser, user.IDUser).Find(&memberships).Error
 	if err != nil {
 		log.Println("Ошибка получения групп пользователя:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
@@ -540,8 +589,8 @@ func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Сохраняем шаг выбора группы
-	userSteps[chatID] = "selecting_event_group"
-	log.Printf("Переход к состоянию: %s", userSteps[chatID])
+	userSteps[user.IDUser] = "selecting_event_group"
+	log.Printf("Переход к состоянию: %s", userSteps[user.IDUser])
 }
 
 func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
