@@ -1,25 +1,27 @@
 package main
 
 import (
+	`context`
 	"errors"
 	"fmt"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	`sync`
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gorm.io/gorm"
 
-	"aliorToDoBot/gorm_models"
 	"aliorToDoBot/src/db"
+	gorm_models2 `aliorToDoBot/src/db/gorm_models`
 )
 
 var (
 	userSteps = make(map[int64]string)
-	tempEvent = make(map[int64]gorm_models.Event) // Временное хранилище для событий на этапе создания
-	tempGroup = make(map[int64]gorm_models.Group) // Временное хранилище для групп на этапе создания
+	tempEvent = make(map[int64]gorm_models2.Event) // Временное хранилище для событий на этапе создания
+	tempGroup = make(map[int64]gorm_models2.Group) // Временное хранилище для групп на этапе создания
 )
 
 func main() {
@@ -32,10 +34,10 @@ func main() {
 
 	// Автоматическая миграция моделей
 	err := db.DB.AutoMigrate(
-		&gorm_models.User{},
-		&gorm_models.Group{},
-		&gorm_models.Event{},
-		&gorm_models.Membership{},
+		&gorm_models2.User{},
+		&gorm_models2.Group{},
+		&gorm_models2.Event{},
+		&gorm_models2.Membership{},
 	)
 	if err != nil {
 		log.Fatalf("Ошибка миграции: %v", err)
@@ -73,27 +75,84 @@ func main() {
 			case "creating_group_name", "adding_group_members":
 				handleGroupCreation(bot, chatID, update.Message.Text)
 			default:
-				handleDefault(bot, chatID, update.Message.Text, update.Message.Chat.UserName)
+				u.handleDefault(bot, chatID, update.Message.Text, update.Message.Chat.UserName)
 			}
 		}
 	}
 }
 
+
+keyboards := map[]tgb
+
+type bot interface {
+	SendKeyboard(keyboardKey int) error
+	Send(messageText string) error
+	LastActivity() time.Duration
+}
+/*
+func NewUI() *UI {
+	var ui UI
+	// тут будет фомирование объекта
+	//
+	//
+	time.NewTicker()
+	go ui.cleaner()
+}
+*/
+
+type ui struct {
+	userSessions map[int64]bot
+	mutex sync.Mutex
+	ttl int64 // times to life
+}
+
+func (u *ui) cleaner(ctx context.Context, ticker time.Ticker)  {
+	for {
+		select {
+		case <- ctx.Done():
+			u.mutex.Lock()
+			u.userSessions = nil
+			u.mutex.Unlock()
+			return
+		case <-ticker.C:
+			go u.clean()
+		}
+	}
+}
+
+func (u *ui) clean() {
+	u.mutex.Lock()
+	for k, v := range u.userSessions {
+		if v.LastActivity() < (time.Duration(u.ttl) *time.Second){
+			u.userSessions[k] = nil
+		}
+	}
+	u.mutex.Unlock()
+}
+
+func (u *ui) GetSession(chatID int64) bot {
+	userSession, exist := u.userSessions[chatID]
+	if !exist {
+		userSession = NewMyTgBot(chatID)
+	}
+	return userSession
+}
+
 // ---- Общие функции ----
-func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
+func (u *ui) handleDefault( chatID int64, text, username string) {
 	fmt.Println("Получено сообщение:", text)
 
 	if text == "Главное меню" {
 		delete(userSteps, chatID)
-		sendMainMenu(bot, chatID)
+		u.sendMainMenu()
 		return
 	}
 
 	switch text {
 	case "/start":
 		checkAndAddNewUser(username, chatID)
-		ensurePersonalGroup(bot, chatID)
-		sendMainMenu(bot, chatID)
+		ensurePersonalGroup(chatID)
+		u.sendMainMenu()
 	case "Мероприятия":
 		sendEventsMenu(bot, chatID)
 	case "Группы":
@@ -119,7 +178,7 @@ func handleDefault(bot *tgbotapi.BotAPI, chatID int64, text, username string) {
 
 func checkAndAddNewUser(username string, chatID int64) {
 	err := db.DB.Where("id_user = ?", chatID).First(
-		&gorm_models.User{IDChat: chatID}).Error
+		&gorm_models2.User{IDChat: chatID}).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		log.Printf("Ошибка проверки авторизации пользователя %d: %v", chatID, err)
 		return
@@ -131,33 +190,24 @@ func checkAndAddNewUser(username string, chatID int64) {
 		return
 	}
 
-	err = db.DB.Create(&gorm_models.User{IDChat: chatID, UserName: username}).Error
+	err = db.DB.Create(&gorm_models2.User{IDChat: chatID, UserName: username}).Error
 	if err != nil {
 		log.Println("Не смог создать новго пользователя")
 	}
 }
 
-func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
+
+func  checkPersonalGroup( ) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
-	err := db.DB.Where("id_chat = ?", chatID).First(&user).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("Пользователь с chatID %d не найден", chatID)
-			msg := tgbotapi.NewMessage(chatID, "Ваш пользовательский профиль не найден. Обратитесь в поддержку.")
-			bot.Send(msg)
-			return
-		}
-		log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
-		msg := tgbotapi.NewMessage(chatID, "Произошла ошибка. Попробуйте позже.")
-		bot.Send(msg)
-		return
-	}
+// я удалил тут гет юзер
+
 
 	// Проверяем, есть ли уже группа "Личное" для данного пользователя
-	var group gorm_models.Group
-	err = db.DB.Where("group_name = ? AND id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", "Личное", user.IDUser).First(&group).Error
-
+	var group gorm_models2.Group
+	tx := db.DB.WithContext().Where("group_name = ? AND id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", "Личное", user.IDUser).First(&group)
+	for _, v := range some_group_id_list {
+		tx.WithContext().Create(&gorm_models2.Membership{})
+	}
 	// Если произошла ошибка, но она не связана с отсутствием записи, логируем и выходим
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		log.Printf("Ошибка проверки группы 'Личное' для пользователя %d: %v", user.IDUser, err)
@@ -171,7 +221,7 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Создаем группу "Личное"
-	newGroup := gorm_models.Group{
+	newGroup := gorm_models2.Group{
 		GroupName: "Личное",
 	}
 
@@ -183,7 +233,7 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Добавляем запись о членстве (Membership) для администратора
-	membership := gorm_models.Membership{
+	membership := gorm_models2.Membership{
 		IDGroup: newGroup.IDGroup, // ID группы
 		IDUser:  user.IDUser,      // ID пользователя из таблицы users
 		IDAdmin: user.IDUser,      // Администратор — текущий пользователь
@@ -199,8 +249,8 @@ func ensurePersonalGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	log.Printf("Группа 'Личное' успешно создана для пользователя %d", user.IDUser)
 }
 
-func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
-	msg := tgbotapi.NewMessage(chatID, "Главное меню:")
+func (u *ui) sendMainMenu() {
+	msg := tgbotapi.NewMessage(u.chatID, "Главное меню:")
 	msg.ReplyMarkup = tgbotapi.ReplyKeyboardMarkup{
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Мероприятия"), tgbotapi.NewKeyboardButton("Группы")},
@@ -237,7 +287,7 @@ func sendGroupsMenu(bot *tgbotapi.BotAPI, chatID int64) {
 // ---- Функционал просмотра мероприятий ----
 func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
+	var user gorm_models2.User
 	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("Пользователь с chatID %d не найден", chatID)
@@ -252,7 +302,7 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Найти группы, в которых пользователь состоит
-	var memberships []gorm_models.Membership
+	var memberships []gorm_models2.Membership
 	if err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error; err != nil {
 		log.Println("Ошибка получения групп пользователя:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
@@ -273,7 +323,7 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Находим мероприятия, связанные с этими группами
-	var events []gorm_models.Event
+	var events []gorm_models2.Event
 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&events).Error; err != nil {
 		log.Println("Ошибка получения event записей:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших мероприятий.")
@@ -288,7 +338,7 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Извлекаем данные о группах для отображения
-	var groups []gorm_models.Group
+	var groups []gorm_models2.Group
 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
 		log.Println("Ошибка получения данных групп:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при обработке данных ваших групп.")
@@ -322,7 +372,7 @@ func viewMyEvents(bot *tgbotapi.BotAPI, chatID int64) {
 	bot.Send(msg)
 }
 
-func formatEvent(event gorm_models.Event, groupName string) string {
+func formatEvent(event gorm_models2.Event, groupName string) string {
 	// Форматируем продолжительность без секунд
 	formattedDuration := formatDuration(event.Duration)
 
@@ -336,6 +386,7 @@ func formatEvent(event gorm_models.Event, groupName string) string {
 
 // Функция форматирования продолжительности без секунд
 func formatDuration(d time.Duration) string {
+
 	days := d / (24 * time.Hour) // Вычисляем дни
 	d -= days * 24 * time.Hour   // Убираем дни из общей продолжительности
 	hours := d / time.Hour       // Вычисляем часы
@@ -365,7 +416,7 @@ func formatDuration(d time.Duration) string {
 
 func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
+	var user gorm_models2.User
 	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("Пользователь с chatID %d не найден", chatID)
@@ -380,7 +431,7 @@ func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Получаем список мероприятий пользователя
-	var events []gorm_models.Event
+	var events []gorm_models2.Event
 	err := db.DB.Where("id_group IN (SELECT id_group FROM memberships WHERE id_user = ?)", user.IDUser).Find(&events).Error
 	if err != nil {
 		log.Printf("Ошибка получения мероприятий: %v", err)
@@ -410,7 +461,7 @@ func deleteEvent(bot *tgbotapi.BotAPI, chatID int64) {
 // ---- Функционал просмотра групп ----
 func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
+	var user gorm_models2.User
 	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("Пользователь с chatID %d не найден", chatID)
@@ -423,7 +474,7 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Получение записей Membership для пользователя
-	var memberships []gorm_models.Membership
+	var memberships []gorm_models2.Membership
 	if err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error; err != nil {
 		log.Println("Ошибка получения membership записей:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
@@ -451,7 +502,7 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Получение информации о группах
-	var groups []gorm_models.Group
+	var groups []gorm_models2.Group
 	if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
 		log.Println("Ошибка получения групп:", err)
 		msg := tgbotapi.NewMessage(chatID, "Ошибка при получении ваших групп.")
@@ -464,7 +515,7 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 	message.WriteString("Ваши группы:\n\n")
 	for _, group := range groups {
 		// Получение всех участников группы
-		var groupMemberships []gorm_models.Membership
+		var groupMemberships []gorm_models2.Membership
 		if err := db.DB.Where("id_group = ?", group.IDGroup).Find(&groupMemberships).Error; err != nil {
 			log.Printf("Ошибка получения участников для группы %d: %v", group.IDGroup, err)
 			continue
@@ -475,7 +526,7 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 		admin := ""
 
 		for _, membership := range groupMemberships {
-			var groupUser gorm_models.User
+			var groupUser gorm_models2.User
 			if err := db.DB.Where("id_user = ?", membership.IDUser).First(&groupUser).Error; err == nil {
 				if membership.IDAdmin == membership.IDUser {
 					admin = "@" + groupUser.UserName
@@ -517,7 +568,7 @@ func viewMyGroups(bot *tgbotapi.BotAPI, chatID int64) {
 // ---- Функционал создания мероприятий ----
 func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
+	var user gorm_models2.User
 	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("Пользователь с chatID %d не найден", chatID)
@@ -536,7 +587,7 @@ func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Получаем список групп, где пользователь является администратором
-	var memberships []gorm_models.Membership
+	var memberships []gorm_models2.Membership
 	err := db.DB.Where("id_user = ? AND id_admin = ?", user.IDUser, user.IDUser).Find(&memberships).Error
 	if err != nil {
 		log.Println("Ошибка получения групп пользователя:", err)
@@ -554,7 +605,7 @@ func startCreateEvent(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Извлекаем данные о группах
-	var groups []gorm_models.Group
+	var groups []gorm_models2.Group
 	if len(groupIDs) > 0 {
 		if err := db.DB.Where("id_group IN ?", groupIDs).Find(&groups).Error; err != nil {
 			log.Println("Ошибка получения информации о группах:", err)
@@ -615,10 +666,6 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_category":
-		if text == "Главное меню" {
-			userSteps[chatID] = ""
-			return
-		}
 		validCategories := []string{"Личное", "Семья", "Работа"}
 		isValid := false
 		for _, category := range validCategories {
@@ -644,10 +691,6 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_name":
-		if text == "Главное меню" {
-			userSteps[chatID] = ""
-			return
-		}
 		event.NameEvent = text
 		tempEvent[chatID] = event
 		userSteps[chatID] = "creating_event_time"
@@ -664,10 +707,6 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 	case "creating_event_time":
-		if text == "Главное меню" {
-			userSteps[chatID] = ""
-			return
-		}
 		if strings.HasPrefix(text, "Весь день") {
 			userSteps[chatID] = "creating_event_all_day_date"
 			log.Printf("Переход к состоянию: %s", userSteps[chatID])
@@ -779,7 +818,7 @@ func handleEventCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 // ---- Функционал создания группы ----
 func startCreateGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	userSteps[chatID] = "creating_group_name"
-	tempGroup[chatID] = gorm_models.Group{}
+	tempGroup[chatID] = gorm_models2.Group{}
 
 	msg := tgbotapi.NewMessage(chatID, "Введите название группы:")
 	msg.ReplyMarkup = tgbotapi.ReplyKeyboardMarkup{
@@ -812,7 +851,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 	case "adding_group_members":
 		// Извлекаем IDUser из таблицы пользователей по chatID
-		var creator gorm_models.User
+		var creator gorm_models2.User
 		if err := db.DB.Where("id_chat = ?", chatID).First(&creator).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				log.Printf("Создатель группы с chatID %d не найден", chatID)
@@ -825,7 +864,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 		// Создаем группу
-		newGroup := gorm_models.Group{GroupName: group.GroupName}
+		newGroup := gorm_models2.Group{GroupName: group.GroupName}
 		if err := db.DB.Create(&newGroup).Error; err != nil {
 			log.Println("Ошибка сохранения группы:", err)
 			bot.Send(tgbotapi.NewMessage(chatID, "Ошибка при создании группы."))
@@ -833,7 +872,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 		// Добавляем администратора в таблицу `Membership`
-		adminMembership := gorm_models.Membership{
+		adminMembership := gorm_models2.Membership{
 			IDGroup: newGroup.IDGroup,
 			IDUser:  creator.IDUser, // IDUser создателя
 			IDAdmin: creator.IDUser, // Устанавливаем администратора
@@ -850,7 +889,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			participant = strings.TrimSpace(participant)
 			participant = strings.TrimPrefix(participant, "@")
 
-			var user gorm_models.User
+			var user gorm_models2.User
 			if err := db.DB.Where("user_name = ?", participant).First(&user).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) || user.IDUser == creator.IDUser { // Игнорируем несуществующих пользователей и администратора
 					continue
@@ -859,7 +898,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 				continue
 			}
 
-			membership := gorm_models.Membership{
+			membership := gorm_models2.Membership{
 				IDGroup: newGroup.IDGroup,
 				IDUser:  user.IDUser,
 				IDAdmin: creator.IDUser, // Устанавливаем создателя группы как администратора
@@ -879,7 +918,7 @@ func handleGroupCreation(bot *tgbotapi.BotAPI, chatID int64, text string) {
 }
 func leaveGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	// Извлекаем IDUser из таблицы users по chatID
-	var user gorm_models.User
+	var user gorm_models2.User
 	if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Printf("Пользователь с chatID %d не найден", chatID)
@@ -896,7 +935,7 @@ func leaveGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	// Получаем группы, в которых пользователь состоит, исключая группу "Личное"
-	var memberships []gorm_models.Membership
+	var memberships []gorm_models2.Membership
 	err := db.DB.Where("id_user = ?", user.IDUser).Find(&memberships).Error
 	if err != nil {
 		log.Printf("Ошибка получения membership записей: %v", err)
@@ -906,9 +945,9 @@ func leaveGroup(bot *tgbotapi.BotAPI, chatID int64) {
 		return
 	}
 
-	var groups []gorm_models.Group
+	var groups []gorm_models2.Group
 	for _, membership := range memberships {
-		var group gorm_models.Group
+		var group gorm_models2.Group
 		if err := db.DB.First(&group, membership.IDGroup).Error; err == nil && group.GroupName != "Личное" {
 			groups = append(groups, group)
 		}
@@ -933,7 +972,7 @@ func leaveGroup(bot *tgbotapi.BotAPI, chatID int64) {
 	// Отправляем сообщение с инлайн-кнопками
 	msg := tgbotapi.NewMessage(chatID, "Выберите группу для выхода:")
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(inlineKeyboard...)
-	if _, err := bot.Send(msg); err != nil {
+	if _, err = bot.Send(msg); err != nil {
 		log.Printf("Ошибка отправки сообщения: %v", err)
 	}
 }
@@ -950,8 +989,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			bot.Send(msg)
 			return
 		}
-		var group gorm_models.Group
-		if err := db.DB.First(&group, groupID).Error; err != nil {
+		var group gorm_models2.Group
+		if err = db.DB.First(&group, groupID).Error; err != nil {
 			msg := tgbotapi.NewMessage(chatID, "Некорректный выбор группы.")
 			bot.Send(msg)
 			return
@@ -960,7 +999,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		// Сохраняем выбранную группу и переходим к созданию мероприятия
 		userSteps[chatID] = "creating_event_for_group"
 		groupID64 := int64(groupID)
-		tempEvent[chatID] = gorm_models.Event{
+		tempEvent[chatID] = gorm_models2.Event{
 			IDGroup:  groupID64,
 			Category: "Группа " + group.GroupName,
 		}
@@ -971,7 +1010,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			bot.Send(msg)
 			return
 		}
-		tempEvent[chatID] = gorm_models.Event{
+		tempEvent[chatID] = gorm_models2.Event{
 			IDGroup:  groupID64,
 			Category: "Группа " + group.GroupName,
 		}
@@ -1000,7 +1039,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			return
 		}
 
-		var event gorm_models.Event
+		var event gorm_models2.Event
 		err = db.DB.First(&event, eventID).Error
 		if err != nil {
 			log.Printf("Ошибка получения мероприятия: %v", err)
@@ -1032,7 +1071,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			return
 		}
 
-		err = db.DB.Delete(&gorm_models.Event{}, eventID).Error
+		err = db.DB.Delete(&gorm_models2.Event{}, eventID).Error
 		if err != nil {
 			log.Printf("Ошибка удаления мероприятия: %v", err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Не удалось удалить мероприятие."))
@@ -1064,7 +1103,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 			return
 		}
 		// поиск группы по ID
-		var group gorm_models.Group
+		var group gorm_models2.Group
 		if err := db.DB.First(&group, groupID).Error; err != nil {
 			log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
@@ -1095,21 +1134,21 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		}
 
 		// Извлекаем IDUser из таблицы users по chatID
-		var user gorm_models.User
+		var user gorm_models2.User
 		if err := db.DB.Where("id_chat = ?", chatID).First(&user).Error; err != nil {
 			log.Printf("Ошибка извлечения пользователя с chatID %d: %v", chatID, err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
 			return
 		}
 
-		var membership gorm_models.Membership
+		var membership gorm_models2.Membership
 		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).First(&membership).Error; err != nil {
 			log.Printf("Ошибка получения membership записи: %v", err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
 			return
 		}
 
-		var group gorm_models.Group
+		var group gorm_models2.Group
 		if err := db.DB.First(&group, groupID).Error; err != nil {
 			log.Printf("Ошибка получения группы с ID %d: %v", groupID, err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при получении данных группы."))
@@ -1119,14 +1158,14 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		// Проверяем, является ли пользователь администратором
 		if membership.IDAdmin == user.IDUser {
 			// Удаляем все записи Membership, связанные с группой
-			if err := db.DB.Where("id_group = ?", groupID).Delete(&gorm_models.Membership{}).Error; err != nil {
+			if err := db.DB.Where("id_group = ?", groupID).Delete(&gorm_models2.Membership{}).Error; err != nil {
 				log.Printf("Ошибка удаления участников группы: %v", err)
 				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении участников группы."))
 				return
 			}
 
 			// Удаляем группу
-			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
+			if err := db.DB.Delete(&gorm_models2.Group{}, groupID).Error; err != nil {
 				log.Printf("Ошибка удаления группы с ID %d: %v", groupID, err)
 				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
 				return
@@ -1140,7 +1179,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 		}
 
 		// Удаляем пользователя из группы
-		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).Delete(&gorm_models.Membership{}).Error; err != nil {
+		if err := db.DB.Where("id_group = ? AND id_user = ?", groupID, user.IDUser).Delete(&gorm_models2.Membership{}).Error; err != nil {
 			log.Printf("Ошибка выхода из группы: %v", err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при выходе из группы."))
 			return
@@ -1148,7 +1187,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 
 		// Проверяем количество оставшихся участников
 		var remainingMembers int64
-		if err := db.DB.Model(&gorm_models.Membership{}).Where("id_group = ?", groupID).Count(&remainingMembers).Error; err != nil {
+		if err := db.DB.Model(&gorm_models2.Membership{}).Where("id_group = ?", groupID).Count(&remainingMembers).Error; err != nil {
 			log.Printf("Ошибка проверки участников группы: %v", err)
 			bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при проверке участников группы."))
 			return
@@ -1156,7 +1195,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery)
 
 		if remainingMembers == 1 {
 			// Удаляем группу, если участников больше нет
-			if err := db.DB.Delete(&gorm_models.Group{}, groupID).Error; err != nil {
+			if err := db.DB.Delete(&gorm_models2.Group{}, groupID).Error; err != nil {
 				log.Printf("Ошибка удаления группы с ID %d: %v", groupID, err)
 				bot.Request(tgbotapi.NewCallback(callback.ID, "Ошибка при удалении группы."))
 				return
@@ -1229,7 +1268,7 @@ func parseDuration(input string) (time.Duration, error) {
 // Обновление статуса мероприятия в зависимости от его времени и продолжительности
 func UpdateEventStatuses(db *gorm.DB) {
 	// Получаем все мероприятия из базы
-	var events []gorm_models.Event
+	var events []gorm_models2.Event
 	err := db.Find(&events).Error
 	if err != nil {
 		log.Printf("Ошибка получения мероприятий: %v", err)
@@ -1272,7 +1311,7 @@ func UpdateEventStatuses(db *gorm.DB) {
 
 		// Обновляем статус в базе, если он изменился
 		if previousStatus != event.Status {
-			err := db.Model(&gorm_models.Event{}).
+			err := db.Model(&gorm_models2.Event{}).
 				Where("id_event = ?", event.IDEvent).
 				Update("status", event.Status).Error
 			if err != nil {
