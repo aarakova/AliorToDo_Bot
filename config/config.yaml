@@ -1,0 +1,15 @@
+telegram:
+  token: "YOUR_TELEGRAM_BOT_TOKEN"
+  debug: true
+
+ui:
+  session_ttl: "10m"
+  cleaner_interval: "20m"
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  dbname: "example"
+  sslmode: "disable"
